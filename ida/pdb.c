@@ -159,6 +159,69 @@ static void histogram(const char *name, int n, const uint8_t *dist, int max)
     printf("  total %d / %d %s\n", total, n, total == n ? "OK" : "MISSING");
 }
 
+enum { STATES = PERMUTATIONS * ORIENTATIONS };
+static uint8_t true_dist[STATES];     /* exact distance, host only */
+static uint32_t big_queue[STATES];
+
+/* BFS over the whole cube; a move updates the two parts independently. */
+static int full_bfs(void)
+{
+    uint32_t head = 0, tail = 0;
+    int max = 0;
+
+    memset(true_dist, 0xFF, STATES);
+    true_dist[0] = 0;
+    big_queue[tail++] = 0;
+
+    while (head < tail) {
+        uint32_t s = big_queue[head++];
+        uint16_t p = (uint16_t) (s / ORIENTATIONS);
+        uint16_t o = (uint16_t) (s % ORIENTATIONS);
+        for (int m = 0; m < MOVES; ++m) {
+            uint32_t t = (uint32_t) perm_next[m][p] * ORIENTATIONS + ori_next[m][o];
+            if (true_dist[t] == 0xFF) {
+                true_dist[t] = true_dist[s] + 1;
+                if (true_dist[t] > max)
+                    max = true_dist[t];
+                big_queue[tail++] = t;
+            }
+        }
+    }
+    return max;
+}
+
+/* H1: h = max(perm, ori) never exceeds the true distance. */
+static void check_h1(void)
+{
+    long violations = 0, ori_wins = 0, ties = 0, h11[8] = {0};
+    double sum_h = 0, sum_d = 0;
+
+    for (uint32_t s = 0; s < STATES; ++s) {
+        uint8_t hp = perm_pdb[s / ORIENTATIONS];
+        uint8_t ho = ori_pdb[s % ORIENTATIONS];
+        uint8_t h = hp > ho ? hp : ho;
+        uint8_t d = true_dist[s];
+
+        if (h > d)
+            ++violations;
+        if (ho > hp)
+            ++ori_wins;
+        else if (ho == hp)
+            ++ties;
+        if (d == 11)
+            ++h11[h];
+        sum_h += h;
+        sum_d += d;
+    }
+    printf("H1 violations: %ld %s\n", violations, violations ? "FAIL" : "PASS");
+    printf("ori > perm: %ld, ties: %ld (of %d)\n", ori_wins, ties, STATES);
+    printf("average h = %.2f, average true distance = %.2f\n",
+           sum_h / STATES, sum_d / STATES);
+    printf("h for the distance-11 states:\n");
+    for (int h = 0; h < 8; ++h)
+        printf("  h=%d: %ld\n", h, h11[h]);
+}
+
 int main(void)
 {
     build_moves();
@@ -178,6 +241,10 @@ int main(void)
               ORIENTATIONS,
               ori_pdb,
               max_o);
+
+    int max_d = full_bfs();
+    histogram("full cube", STATES, true_dist, max_d);
+    check_h1();
 
     return 0;
 }
