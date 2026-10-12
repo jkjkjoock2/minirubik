@@ -222,6 +222,122 @@ static void check_h1(void)
         printf("  h=%d: %ld\n", h, h11[h]);
 }
 
+typedef struct {
+    uint16_t p, o;     /* state at this depth */
+    uint8_t next;      /* next move to try (0..9) */
+    uint8_t last;      /* move that led here, 9 = none (root) */
+} frame_t;
+
+static long nodes;     /* how many states the search pushed */
+
+static int h_of(uint16_t p, uint16_t o)
+{
+    return perm_pdb[p] > ori_pdb[o] ? perm_pdb[p] : ori_pdb[o];
+}
+
+/* Returns the optimal length; path[0..len-1] gets the moves. */
+static int ida_star(uint32_t start, uint8_t *path)
+{
+    frame_t st[12];
+    uint16_t p0 = (uint16_t) (start / ORIENTATIONS);
+    uint16_t o0 = (uint16_t) (start % ORIENTATIONS);
+    int bound = h_of(p0, o0);
+
+    for (;;) {
+        int top = 0;
+        st[0] = (frame_t) {p0, o0, 0, 9};
+        while (top >= 0) {
+            frame_t *f = &st[top];
+            if (f->p == 0 && f->o == 0)
+                return top;                    /* solved at depth top */
+            if (f->next == MOVES) {            /* all moves tried here */
+                --top;                         /* pop */
+                continue;
+            }
+            uint8_t m = f->next++;
+            if ((f->last != 9) && (m / 3 == f->last / 3)) /* same face as last move */
+                continue;
+            uint16_t np = perm_next[m][f->p];
+            uint16_t no = ori_next[m][f->o];
+            if ((top + 1) + h_of(np, no) > bound) /* g + h > bound: prune */
+                continue;
+            ++nodes;
+            path[top] = m;
+            st[top + 1] = (frame_t) {np, no, 0, m};
+            ++top;                             /* push */
+        }
+        ++bound;                               /* no solution within bound */
+    }
+}
+
+/* Apply path with the tables and check it reaches solved. */
+static int path_solves(uint32_t start, const uint8_t *path, int len)
+{
+    uint16_t p = (uint16_t) (start / ORIENTATIONS);
+    uint16_t o = (uint16_t) (start % ORIENTATIONS);
+    for (int i = 0; i < len; ++i) {
+        p = perm_next[path[i]][p];
+        o = ori_next[path[i]][o];
+    }
+    return p == 0 && o == 0;
+}
+
+/* Rank of a 14-digit state string such as "21345671111111". */
+static uint32_t rank_of_string(const char *text)
+{
+    state_t s;
+    for (int i = 0; i < CUBIES; ++i) {
+        s.p[i] = (uint8_t) (text[i] - '1');
+        s.o[i] = (uint8_t) (text[i + CUBIES] - '1');
+    }
+    return rank_state(&s);
+}
+
+/* Run IDA* on every distance-11 state and report node counts. */
+static void measure_ida(void)
+{
+    long worst = 0, total = 0, count = 0, bad = 0;
+    long by_h_count[8] = {0}, by_h_max[8] = {0}, by_h_sum[8] = {0};
+    uint32_t worst_state = 0;
+    uint8_t path[11];
+
+    for (uint32_t s = 0; s < STATES; ++s) {
+        if (true_dist[s] != 11)
+            continue;
+        nodes = 0;
+        int len = ida_star(s, path);
+        if (len != 11 || !path_solves(s, path, len))
+            ++bad;
+        int h = h_of((uint16_t) (s / ORIENTATIONS), (uint16_t) (s % ORIENTATIONS));
+        ++by_h_count[h];
+        by_h_sum[h] += nodes;
+        if (nodes > by_h_max[h])
+            by_h_max[h] = nodes;
+        if (nodes > worst) {
+            worst = nodes;
+            worst_state = s;
+        }
+        total += nodes;
+        ++count;
+    }
+    printf("IDA* on %ld distance-11 states: %ld wrong\n", count, bad);
+    printf("nodes: max %ld, average %.0f\n", worst, (double) total / count);
+    printf("worst state rank %u, its h = %d\n", worst_state,
+           h_of((uint16_t) (worst_state / ORIENTATIONS),
+                (uint16_t) (worst_state % ORIENTATIONS)));
+    printf("by root h:   count   average       max\n");
+    for (int h = 0; h < 8; ++h)
+        if (by_h_count[h])
+            printf("  h=%d:    %6ld  %8.0f  %8ld\n", h, by_h_count[h],
+                   (double) by_h_sum[h] / by_h_count[h], by_h_max[h]);
+
+    uint32_t sample = rank_of_string("21345671111111");
+    nodes = 0;
+    int len = ida_star(sample, path);
+    printf("sample 21345671111111: length %d, nodes %ld, %s\n", len, nodes,
+           path_solves(sample, path, len) ? "solves" : "WRONG");
+}
+
 int main(void)
 {
     build_moves();
@@ -245,6 +361,7 @@ int main(void)
     int max_d = full_bfs();
     histogram("full cube", STATES, true_dist, max_d);
     check_h1();
+    measure_ida();
 
     return 0;
 }
