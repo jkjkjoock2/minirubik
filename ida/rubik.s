@@ -7,7 +7,13 @@
 # Exit codes: 0 = solved and verified, 1 = path check failed, 2 = invalid input
 
 .data
+# Search stack: 12 frames (depth 0..11) of 20 bytes.  First in .data so it
+# starts word-aligned; 20 is a multiple of 4, so every frame stays aligned.
+#   0 p (.half)   2 o (.half)   4 cp (.half)   6 co (.half)
+#   8 pp (.word) 12 op (.word) 16 face  17 turn  18 mface  19 mturn (.byte)
+stack:  .zero 240
 fact:   .half 720, 120, 24, 6, 2, 1, 1     # (6 - i)!: Lehmer code weights
+names:  .string "RBD"                      # face letters for printing
 state:  .string "21345671111111"           # input: 7 cubie digits, 7 orientation digits
         .align 2                           # tables.s continues .data with .half tables
 
@@ -136,21 +142,221 @@ lehmer_skip:
     bltu t0, t4, lehmer_outer
 
     # ---------------------------------------------------------------
-    # Temporary check of step 1: print p and o, then exit 0.
-    # (removed once the search is written)
+    # 2. IDA* search (see ida/search.c).  All fields of the current node
+    #    live in registers; memory is touched only on push and pop.
+    #
+    #    s0  p        current node            t0  cp      child after `turn`
+    #    s1  o        current node            t1  co      quarter turns of `face`
+    #    s2  f        current frame pointer   t2  pp      perm row of `face`
+    #    s3  g        depth of current node   t3  op      ori row of `face`
+    #    s4  bound                            t4  face    0..2, 3 = all tried
+    #    s5  &perm_pdb                        t5  turn    0..3
+    #    s6  &ori_pdb                         t6  face of the move being tried
+    #    s7  &perm_row                        a0..a3      scratch (h, loads,
+    #    s8  &ori_row                                     the move's turn)
+    #    s9  mface    current node (0xFF = root, no face equals it)
+    #    s10 3        constant: turn == 3, face == 3
+    #    s11 &stack   root frame, to know when the root is exhausted
+    #
+    #    push writes: parent's cp, co, pp, op, face, turn into its frame,
+    #                 child's p, o, mface, mturn into the child frame
+    #    pop reads:   p, o, cp, co, pp, op, face, turn, mface
+    #    h == 0 exactly when the state is solved, so computing h also
+    #    finds the solution.
     # ---------------------------------------------------------------
-    mv   a0, s0             # print p
-    li   a7, 1
-    ecall
-    li   a0, 32             # print a space
-    li   a7, 11
-    ecall
-    mv   a0, s1             # print o
-    li   a7, 1
+
+    # Constants and table addresses: s5..s8, s10, s11.
+    la   s5, perm_pdb
+    la   s6, ori_pdb
+    la   s7, perm_row
+    la   s8, ori_row
+    la   s11, stack
+    li   s10, 3
+
+    # Root frame: store p0, o0 so every iteration can start from them.
+    sh   s0, 0(s11)
+    sh   s1, 2(s11)
+
+    # h(root) = max(perm_pdb[p0], ori_pdb[o0])
+    add  a2, s5, s0
+    lbu  a0, 0(a2)
+    add  a3, s6, s1
+    lbu  a1, 0(a3)
+    bgeu a0, a1, root_h_done
+    mv   a0, a1
+
+root_h_done:
+    # If h(root) == 0, the cube is already solved: g = 0, go to found.
+    li   s3, 0              # g = 0 before found can read it
+    beqz a0, found
+    mv   s4, a0             # bound = h(root)
+
+iter_start:
+    # f = &stack, g = 0
+    mv   s2, s11            # f = &stack
+    li   s3, 0              # g = 0
+    # p, o = root's p, o (from the root frame)
+    lhu  s0, 0(s11)         # p
+    lhu  s1, 2(s11)         # o
+    # face = 0, turn = 0, mface = 0xFF
+    li   t4, 0              # face = 0
+    li   t5, 0              # turn = 0
+    li   s9, 255            # mface = NONE (0xFF)
+    sb   s9, 18(s11)        # root frame's mface too, read back by pop
+
+face_start:
+    # Same-face pruning: if face == mface, face += 1.
+    # If face == 3, every face of this node is tried: go to pop.
+    # cp = p, co = o
+    # pp = perm_row[face], op = ori_row[face]      (face * 4: a shift)
+    #     No second face == mface test: after face += 1, face is mface + 1.
+    bne  t4, s9, face_ok
+    addi t4, t4, 1
+
+face_ok:
+    beq  t4, s10, pop
+
+    mv   t0, s0             # cp = p
+    mv   t1, s1             # co = o
+
+    slli a0, t4, 2          # face * 4, used for both row tables
+
+    add  a1, s7, a0         # &perm_row[face]
+    lw   t2, 0(a1)          # pp
+
+    add  a1, s8, a0         # &ori_row[face]
+    lw   t3, 0(a1)          # op
+
+child:
+    # One more quarter turn: cp = pp[cp], co = op[co]  (.half: index * 2)
+    # t6 = face, and keep the move's turn (1..3) in a scratch register,
+    #      before face and turn may change below
+    # turn += 1
+    # If turn == 3: turn = 0, face += 1   (R' done; next time, a new face)
+
+    slli a0, t0, 1          # cp = pp[cp]
+    add  a0, t2, a0
+    lhu  t0, 0(a0)
+
+    slli a0, t1, 1          # co = op[co]
+    add  a0, t3, a0
+    lhu  t1, 0(a0)
+
+    mv   t6, t4             # face of this move, for the child's mface
+    addi t5, t5, 1          # turn += 1
+    mv   a3, t5             # this move's turn (1..3), for the child's mturn
+
+    bne  t5, s10, child_turn_ok
+    li   t5, 0              # R' done: turn = 0
+    addi t4, t4, 1          #          face += 1
+
+child_turn_ok:
+    # h = max(perm_pdb[cp], ori_pdb[co])   (a0 keeps h for push)
+    add  a0, s5, t0
+    lbu  a0, 0(a0)
+    add  a1, s6, t1
+    lbu  a1, 0(a1)
+    bgeu a0, a1, h_done
+    mv   a0, a1
+
+h_done:
+    # If g + 1 + h > bound: go to prune.
+    addi a2, s3, 1
+    add  a2, a2, a0
+    bltu s4, a2, prune
+
+push:
+    # Store the parent's cp, co, pp, op, face, turn into frame f.
+    # f += 20, g += 1
+    # Store the child's p = cp, o = co, mface = t6, mturn = the move's turn
+    # into the new frame f.
+    # Registers become the child: p = cp, o = co, mface = t6,
+    #                             face = 0, turn = 0
+    # If h == 0: go to found.
+    # Go to face_start.
+    #     The child is written at 20(s2).. before f moves, so one addi
+    #     at the end is enough.  found comes after the stores, so the
+    #     last move is already in the stack.
+    sh   t0, 4(s2)          # parent's cp
+    sh   t1, 6(s2)          # parent's co
+    sw   t2, 8(s2)          # parent's pp
+    sw   t3, 12(s2)         # parent's op
+    sb   t4, 16(s2)         # parent's face
+    sb   t5, 17(s2)         # parent's turn
+
+    sh   t0, 20(s2)         # child p = cp
+    sh   t1, 22(s2)         # child o = co
+    sb   t6, 38(s2)         # child mface
+    sb   a3, 39(s2)         # child mturn
+
+    addi s2, s2, 20         # f += 20
+    addi s3, s3, 1          # g += 1
+
+    mv   s0, t0             # p = cp
+    mv   s1, t1             # o = co
+    mv   s9, t6             # mface
+    li   t4, 0              # face = 0
+    li   t5, 0              # turn = 0
+
+    beqz a0, found          # h == 0: solved
+    j    face_start
+
+prune:
+    # The child is cut.  If turn == 0, the face just finished: face_start.
+    # Otherwise try the next quarter turn of the same face: child.
+    beqz t5, face_start
+    j    child
+
+pop:
+    # If f == &stack: the root is exhausted: go to next_bound.
+    # f -= 20, g -= 1
+    # Load p, o, cp, co, pp, op, face, turn, mface from frame f.
+    # Continue the parent like after a pruned child: go to prune.
+    beq  s2, s11, next_bound
+
+    addi s2, s2, -20        # f -= 20
+    addi s3, s3, -1         # g -= 1
+
+    lhu  s0, 0(s2)          # p
+    lhu  s1, 2(s2)          # o
+    lhu  t0, 4(s2)          # cp
+    lhu  t1, 6(s2)          # co
+    lw   t2, 8(s2)          # pp
+    lw   t3, 12(s2)         # op
+    lbu  t4, 16(s2)         # face
+    lbu  t5, 17(s2)         # turn
+    lbu  s9, 18(s2)         # mface
+
+    j    prune
+
+next_bound:
+    # bound += 1, go to iter_start.
+    addi s4, s4, 1          # bound += 1
+    j    iter_start
+
+found:
+    # g = solution length; the moves are frames 1..g, mface and mturn.
+
+    # ---------------------------------------------------------------
+    # 3. T5: replay the path from (p0, o0) with the quarter-turn tables;
+    #    it must reach (0, 0).  Otherwise exit 1.
+    # ---------------------------------------------------------------
+verify:
+
+    # ---------------------------------------------------------------
+    # 4. Print the moves: face letter from `names`, then nothing for one
+    #    quarter turn, '2' for two, an apostrophe for three; a space
+    #    between moves.
+    # ---------------------------------------------------------------
+print_path:
+
+    li   a0, 0
+    li   a7, 93
     ecall
 
-    li a0, 0
-    li a7, 93
+fail:
+    li   a0, 1
+    li   a7, 93
     ecall
 
 invalid:
