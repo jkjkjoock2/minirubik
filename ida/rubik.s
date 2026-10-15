@@ -154,6 +154,7 @@ lehmer_skip:
     #    s6  &ori_pdb                         t6  face of the move being tried
     #    s7  &perm_row                        a0..a3      scratch (h, loads,
     #    s8  &ori_row                                     the move's turn)
+    #                                         a4  limit = bound - g - 1
     #    s9  mface    current node (0xFF = root, no face equals it)
     #    s10 3        constant: turn == 3, face == 3
     #    s11 &stack   root frame, to know when the root is exhausted
@@ -195,6 +196,7 @@ iter_start:
     # f = &stack, g = 0
     mv   s2, s11            # f = &stack
     li   s3, 0              # g = 0
+    addi a4, s4, -1         # limit = bound - 1 (g = 0), recomputed every round
     # p, o = root's p, o (from the root frame)
     lhu  s0, 0(s11)         # p
     lhu  s1, 2(s11)         # o
@@ -260,10 +262,8 @@ child_turn_ok:
     mv   a0, a1
 
 h_done:
-    # If g + 1 + h > bound: go to prune.
-    addi a2, s3, 1
-    add  a2, a2, a0
-    bltu s4, a2, prune
+    # If g + 1 + h > bound, that is h > limit: go to prune.
+    bltu a4, a0, prune
 
 push:
     # Store the parent's cp, co, pp, op, face, turn into frame f.
@@ -291,6 +291,7 @@ push:
 
     addi s2, s2, 20         # f += 20
     addi s3, s3, 1          # g += 1
+    addi a4, a4, -1         # limit -= 1
 
     mv   s0, t0             # p = cp
     mv   s1, t1             # o = co
@@ -316,6 +317,7 @@ pop:
 
     addi s2, s2, -20        # f -= 20
     addi s3, s3, -1         # g -= 1
+    addi a4, a4, 1          # limit += 1
 
     lhu  s0, 0(s2)          # p
     lhu  s1, 2(s2)          # o
