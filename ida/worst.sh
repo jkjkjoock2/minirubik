@@ -13,7 +13,8 @@ start=$(date +%s)
 xargs -P "$JOBS" -n 1 sh -c '
     s=$1
     d=$(mktemp -d)
-    sed "s/\"21345671111111\"/\"$s\"/" ida/rubik.s | cat - ida/tables.s > "$d/t.s"
+    sed -e "/# RENDER_BEGIN/,/# RENDER_END/d" -e "s/\"21345671111111\"/\"$s\"/" ida/rubik.s |
+        cat - ida/tables.s > "$d/t.s"
     "$RIPES" --mode cli -t asm --src "$d/t.s" --proc RV32_ISS --iret > "$d/out" 2>&1
     code=$(sed -n "s/^Program exited with code: //p" "$d/out")
     moves=$(head -1 "$d/out" | wc -w | tr -d " ")

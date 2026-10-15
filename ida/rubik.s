@@ -205,6 +205,37 @@ iter_start:
     li   t5, 0              # turn = 0
     li   s9, 255            # mface = NONE (0xFF)
     sb   s9, 18(s11)        # root frame's mface too, read back by pop
+    j    face_start        # pop is below: do not fall into it
+
+pop:
+    # If f == &stack: the root is exhausted: go to next_bound.
+    # f -= 20, g -= 1
+    # Load p, o, cp, co, pp, op, face, turn, mface from frame f.
+    # Continue the parent like after a pruned child: go to prune.
+    beq  s2, s11, next_bound
+
+    addi s2, s2, -20        # f -= 20
+    addi s3, s3, -1         # g -= 1
+    addi a4, a4, 1          # limit += 1
+
+    lhu  s0, 0(s2)          # p
+    lhu  s1, 2(s2)          # o
+    lhu  t0, 4(s2)          # cp
+    lhu  t1, 6(s2)          # co
+    lw   t2, 8(s2)          # pp
+    lw   t3, 12(s2)         # op
+    lbu  t4, 16(s2)         # face
+    lbu  t5, 17(s2)         # turn
+    lbu  s9, 18(s2)         # mface
+
+    # (falls through into prune, laid out right below)
+
+prune:
+    # The child is cut.  If turn == 0, the face just finished: face_start.
+    # Otherwise try the next quarter turn of the same face: child.
+    #     Laid out right above face_start: turn != 0 jumps to child,
+    #     turn == 0 falls through into face_start.
+    bnez t5, child
 
 face_start:
     # Same-face pruning: if face == mface, face += 1.
@@ -302,35 +333,6 @@ push:
     beqz a0, found          # h == 0: solved
     j    face_start
 
-prune:
-    # The child is cut.  If turn == 0, the face just finished: face_start.
-    # Otherwise try the next quarter turn of the same face: child.
-    beqz t5, face_start
-    j    child
-
-pop:
-    # If f == &stack: the root is exhausted: go to next_bound.
-    # f -= 20, g -= 1
-    # Load p, o, cp, co, pp, op, face, turn, mface from frame f.
-    # Continue the parent like after a pruned child: go to prune.
-    beq  s2, s11, next_bound
-
-    addi s2, s2, -20        # f -= 20
-    addi s3, s3, -1         # g -= 1
-    addi a4, a4, 1          # limit += 1
-
-    lhu  s0, 0(s2)          # p
-    lhu  s1, 2(s2)          # o
-    lhu  t0, 4(s2)          # cp
-    lhu  t1, 6(s2)          # co
-    lw   t2, 8(s2)          # pp
-    lw   t3, 12(s2)         # op
-    lbu  t4, 16(s2)         # face
-    lbu  t5, 17(s2)         # turn
-    lbu  s9, 18(s2)         # mface
-
-    j    prune
-
 next_bound:
     # bound += 1, go to iter_start.
     addi s4, s4, 1          # bound += 1
@@ -391,6 +393,40 @@ print_path:
     mv   t2, s3             # remaining moves = g
     li   t3, 1              # first move flag: no space before it
 
+    # RENDER_BEGIN
+    # p8/o8 from the input string (position 0 is the fixed corner),
+    # then draw the scrambled cube.
+    la   a1, p8
+    la   a2, o8
+    la   a3, state
+
+    sb   x0, 0(a1)          # p8[0] = 0
+    sb   x0, 0(a2)          # o8[0] = 0
+
+    addi a1, a1, 1
+    addi a2, a2, 1
+
+    li   a4, 7
+
+render_init_loop:
+    lbu  a5, 0(a3)
+    addi a5, a5, -48        # p8[i] = state[i - 1] - '0'
+    sb   a5, 0(a1)
+
+    lbu  a5, 7(a3)
+    addi a5, a5, -49        # o8[i] = state[i + 6] - '1'
+    sb   a5, 0(a2)
+
+    addi a1, a1, 1
+    addi a2, a2, 1
+    addi a3, a3, 1
+
+    addi a4, a4, -1
+    bnez a4, render_init_loop
+
+    jal  ra, render
+    # RENDER_END
+
 print_loop:
     beqz t2, print_done
     beqz t3, print_space
@@ -410,6 +446,19 @@ print_move:
     beq  t5, a0, print_prime
 
 print_after_suffix:
+    # RENDER_BEGIN
+    # Apply the move just printed to p8/o8 and redraw.  turn and render
+    # leave t0..t5 alone, so t4 = mface and t5 = mturn are still valid,
+    # and t5 can count the quarter turns down (it is reloaded next move).
+    mv   a6, t4             # face
+render_turn_loop:
+    beqz t5, render_redraw
+    jal  ra, turn
+    addi t5, t5, -1
+    j    render_turn_loop
+render_redraw:
+    jal  ra, render
+    # RENDER_END
     li   t3, 0              # later moves get a space first
     addi t1, t1, 20
     addi t2, t2, -1
@@ -451,3 +500,140 @@ invalid:
     li a0, 2
     li a7, 93
     ecall
+
+# RENDER_BEGIN
+# ---------------------------------------------------------------
+# LED renderer (GUI build only).  The CLI build deletes everything from
+# the begin marker to the end marker with sed, since LED_MATRIX_0_BASE
+# exists only when an LED matrix is instantiated in the GUI.  (This comment
+# must not spell the markers out, or sed would stop here.)
+# Data: ida/render.s.  Called from print_path, so t0..t3 (print_path's
+# live registers), s3 and s11 are left untouched.
+# ---------------------------------------------------------------
+
+# turn: one quarter turn of face a6 (0..2) on p8/o8, through p8b/o8b.
+# Every new entry reads the old arrays, so the result goes to p8b/o8b first
+# and is copied back afterwards (8 bytes each = 2 words, all 4-byte aligned).
+turn:
+    slli a1, a6, 3          # face * 8: one row of source8 / twist8
+
+    la   s1, source8
+    add  s1, s1, a1         # &source8[f][0]
+
+    la   s2, twist8
+    add  s2, s2, a1         # &twist8[f][0]
+
+    la   s4, p8
+    la   s5, o8
+    la   s6, p8b
+    la   s7, o8b
+
+    li   s8, 8              # counter
+    li   s9, 3              # constant 3
+
+turn_loop:
+    lbu  a2, 0(s1)          # src
+
+    add  a3, s4, a2         # &p8[src]
+    lbu  a3, 0(a3)
+    sb   a3, 0(s6)          # p8b[i]
+
+    add  a4, s5, a2         # &o8[src]
+    lbu  a4, 0(a4)
+
+    lbu  a5, 0(s2)          # twist
+    add  a4, a4, a5         # t = o8[src] + twist  (at most 4)
+
+    bltu a4, s9, turn_t_ok
+    addi a4, a4, -3
+
+turn_t_ok:
+    sb   a4, 0(s7)          # o8b[i]
+
+    addi s1, s1, 1          # source++
+    addi s2, s2, 1          # twist++
+    addi s6, s6, 1          # p8b++
+    addi s7, s7, 1          # o8b++
+
+    addi s8, s8, -1
+    bnez s8, turn_loop
+
+    la   s4, p8             # copy p8b -> p8
+    la   s6, p8b
+    lw   a1, 0(s6)
+    lw   a2, 4(s6)
+    sw   a1, 0(s4)
+    sw   a2, 4(s4)
+
+    la   s5, o8             # copy o8b -> o8
+    la   s7, o8b
+    lw   a1, 0(s7)
+    lw   a2, 4(s7)
+    sw   a1, 0(s5)
+    sw   a2, 4(s5)
+
+    ret
+
+# render: draw the 24 facelets of p8/o8.  Position pos's sticker k shows
+# sticker (k + o8[pos]) mod 3 of cubie p8[pos].
+render:
+    li   s0, LED_MATRIX_0_BASE
+
+    la   s1, facelet_offset
+    la   s2, facelet_pos
+    la   s4, facelet_k
+    la   s5, p8
+    la   s6, o8
+    la   s7, cubie_rgb
+
+    li   s8, 24             # facelets left
+    li   s9, 3              # mod-3 constant, outside the loop
+
+render_loop:
+    lbu  a1, 0(s2)          # pos
+    lbu  a2, 0(s4)          # k
+
+    add  a3, s5, a1
+    lbu  a3, 0(a3)          # c = p8[pos]
+
+    add  a4, s6, a1
+    lbu  a4, 0(a4)          # o = o8[pos]
+
+    add  a2, a2, a4         # j = k + o  (at most 4)
+    bltu a2, s9, render_j_ok
+    addi a2, a2, -3
+
+render_j_ok:
+    slli a3, a3, 4          # c * 16
+    slli a2, a2, 2          # j * 4
+    add  a3, a3, a2
+    add  a3, s7, a3
+    lw   a5, 0(a3)          # color = cubie_rgb[c][j]
+
+    lw   a3, 0(s1)          # facelet offset
+    add  a3, s0, a3         # addr of the top-left pixel
+
+    sw   a5,   0(a3)        # row 0
+    sw   a5,   4(a3)
+    sw   a5,   8(a3)
+    sw   a5,  12(a3)
+
+    sw   a5, 140(a3)        # row 1 (35 * 4 bytes below)
+    sw   a5, 144(a3)
+    sw   a5, 148(a3)
+    sw   a5, 152(a3)
+
+    sw   a5, 280(a3)        # row 2
+    sw   a5, 284(a3)
+    sw   a5, 288(a3)
+    sw   a5, 292(a3)
+
+    addi s1, s1, 4          # next offset (.word)
+    addi s2, s2, 1          # next pos (.byte)
+    addi s4, s4, 1          # next k (.byte)
+
+    addi s8, s8, -1
+    bnez s8, render_loop
+
+    ret
+# RENDER_END

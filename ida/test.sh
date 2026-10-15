@@ -12,7 +12,8 @@ fail=0
 # run STATE: build rubik.s with STATE inlined, run it on Ripes.
 # Sets $code (exit code), $moves (moves printed), $iret (instructions retired).
 run() {
-    sed "s/\"21345671111111\"/\"$1\"/" ida/rubik.s | cat - ida/tables.s > "$TMP/t.s"
+    sed -e '/# RENDER_BEGIN/,/# RENDER_END/d' -e "s/\"21345671111111\"/\"$1\"/" ida/rubik.s |
+        cat - ida/tables.s > "$TMP/t.s"
     "$RIPES" --mode cli -t asm --src "$TMP/t.s" --proc RV32_ISS --iret > "$TMP/out" 2>&1
     code=$(sed -n 's/^Program exited with code: //p' "$TMP/out")
     iret=$(tail -1 "$TMP/out")
