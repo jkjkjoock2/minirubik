@@ -2,21 +2,25 @@
 # test.sh - run ida/rubik.s on Ripes (RV32_ISS) for each test vector and
 # check the exit code and the number of moves printed.
 # Usage, from the repository root:  sh ida/test.sh
+# Another processor model:            PROC=RV32_5S sh ida/test.sh
 
 RIPES=${RIPES:-/Applications/Ripes-v2.2.6-106-g5b8a616-mac-universal2.app/Contents/MacOS/Ripes}
+PROC=${PROC:-RV32_ISS}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' 0 1 2 15
 pass=0
 fail=0
 
 # run STATE: build rubik.s with STATE inlined, run it on Ripes.
-# Sets $code (exit code), $moves (moves printed), $iret (instructions retired).
+# Sets $code (exit code), $moves (moves printed), $iret (instructions retired),
+# $cycles (cycles on the chosen model).
 run() {
     sed -e '/# RENDER_BEGIN/,/# RENDER_END/d' -e "s/\"21345671111111\"/\"$1\"/" ida/rubik.s |
         cat - ida/tables.s > "$TMP/t.s"
-    "$RIPES" --mode cli -t asm --src "$TMP/t.s" --proc RV32_ISS --iret > "$TMP/out" 2>&1
+    "$RIPES" --mode cli -t asm --src "$TMP/t.s" --proc "$PROC" --iret --cycles > "$TMP/out" 2>&1
     code=$(sed -n 's/^Program exited with code: //p' "$TMP/out")
     iret=$(tail -1 "$TMP/out")
+    cycles=$(sed -n '/^===== cycles/{n;p;}' "$TMP/out")
     if [ "$code" = 0 ]; then
         moves=$(head -1 "$TMP/out" | wc -w | tr -d ' ')
     else
@@ -30,7 +34,8 @@ check() {
     run "$2"
     if [ "$code" = "$3" ] && [ "$moves" = "$4" ]; then
         pass=$((pass + 1))
-        printf 'PASS  %-16s %s  code %s  moves %s  iret %s\n' "$1" "$2" "$code" "$moves" "$iret"
+        printf 'PASS  %-16s %s  code %s  moves %s  iret %s  cycles %s\n' \
+            "$1" "$2" "$code" "$moves" "$iret" "$cycles"
     else
         fail=$((fail + 1))
         printf 'FAIL  %-16s %s  code %s (want %s)  moves %s (want %s)\n' \
@@ -63,5 +68,5 @@ check non_digit      1234567111111a  2 -    # (3) orientation range ('a' - '1' =
 check duplicate      11345671111111  2 -    # (2) seen mask
 check parity         12345671111112  2 -    # (3) sum mod 3
 
-echo "$pass passed, $fail failed"
+echo "$PROC: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
