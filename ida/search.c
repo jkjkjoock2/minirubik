@@ -1,7 +1,9 @@
 /* search.c - Stage 3: IDA* written the way the RV32I version will run.
  * Hot path: no multiply, divide or modulo; the stack is walked by pointer. */
 #include <stdint.h>
+#ifndef SEARCH_NO_MAIN /* ida/ref.c builds solve() without stdio and main */
 #include <stdio.h>
+#endif
 #include <string.h>
 
 #include "tables.h"
@@ -114,6 +116,7 @@ static int parse(const char *text, uint16_t *p, uint16_t *o)
     return 1;
 }
 
+#ifndef SEARCH_NO_MAIN
 int main(int argc, char **argv)
 {
     static const char *const names[3][3] = {
@@ -137,3 +140,4 @@ int main(int argc, char **argv)
     printf("\n%d moves, %s\n", g, cp == 0 && co == 0 ? "solves" : "WRONG");
     return 0;
 }
+#endif
