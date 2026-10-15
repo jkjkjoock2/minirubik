@@ -342,6 +342,41 @@ found:
     #    it must reach (0, 0).  Otherwise exit 1.
     # ---------------------------------------------------------------
 verify:
+    lhu  t0, 0(s11)         # p = p0
+    lhu  t1, 2(s11)         # o = o0
+    addi t2, s11, 20        # ptr = &stack[1]
+    mv   t3, s3             # remaining steps = g
+
+verify_step:
+    beqz t3, verify_done
+    lbu  t4, 18(t2)         # mface
+    lbu  t5, 19(t2)         # mturn
+
+    slli a0, t4, 2          # pp = perm_row[mface]
+    add  a1, s7, a0
+    lw   a1, 0(a1)
+    add  a2, s8, a0         # op = ori_row[mface]
+    lw   a2, 0(a2)
+
+verify_turn:
+    beqz t5, verify_next
+    slli a0, t0, 1          # p = pp[p]
+    add  a0, a1, a0
+    lhu  t0, 0(a0)
+    slli a0, t1, 1          # o = op[o]
+    add  a0, a2, a0
+    lhu  t1, 0(a0)
+    addi t5, t5, -1
+    j    verify_turn
+
+verify_next:
+    addi t2, t2, 20         # next frame
+    addi t3, t3, -1         # one move consumed
+    j    verify_step
+
+verify_done:
+    or   a0, t0, t1         # (p | o) == 0 exactly when both are 0
+    bnez a0, fail
 
     # ---------------------------------------------------------------
     # 4. Print the moves: face letter from `names`, then nothing for one
@@ -349,8 +384,59 @@ verify:
     #    between moves.
     # ---------------------------------------------------------------
 print_path:
+    la   t0, names          # names = "RBD"
+    addi t1, s11, 20        # ptr = &stack[1]
+    mv   t2, s3             # remaining moves = g
+    li   t3, 1              # first move flag: no space before it
 
-    li   a0, 0
+print_loop:
+    beqz t2, print_done
+    beqz t3, print_space
+
+print_move:
+    lbu  t4, 18(t1)         # mface
+    lbu  t5, 19(t1)         # mturn
+
+    add  a0, t0, t4         # face letter
+    lbu  a0, 0(a0)
+    li   a7, 11
+    ecall
+
+    li   a0, 2
+    beq  t5, a0, print_2
+    li   a0, 3
+    beq  t5, a0, print_prime
+
+print_after_suffix:
+    li   t3, 0              # later moves get a space first
+    addi t1, t1, 20
+    addi t2, t2, -1
+    j    print_loop
+
+print_space:
+    li   a0, 32             # ' '
+    li   a7, 11
+    ecall
+    j    print_move
+
+print_2:
+    li   a0, 50             # '2'
+    li   a7, 11
+    ecall
+    j    print_after_suffix
+
+print_prime:
+    li   a0, 39             # apostrophe
+    li   a7, 11
+    ecall
+    j    print_after_suffix
+
+print_done:
+    li   a0, 10             # newline
+    li   a7, 11
+    ecall
+
+    li   a0, 0              # exit 0: solved and verified
     li   a7, 93
     ecall
 

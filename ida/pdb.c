@@ -482,6 +482,26 @@ static int emit_asm(const char *path)
     return fclose(out) == 0;
 }
 
+/* Write every distance-11 state as a 14-character string, one per line. */
+static int emit_d11(const char *path)
+{
+    FILE *out = fopen(path, "w");
+    if (!out)
+        return 0;
+    for (uint32_t s = 0; s < STATES; ++s) {
+        if (true_dist[s] != 11)
+            continue;
+        state_t st;
+        unrank_state(s, &st);
+        for (int i = 0; i < CUBIES; ++i)
+            fputc(st.p[i] + '1', out);
+        for (int i = 0; i < CUBIES; ++i)
+            fputc(st.o[i] + '1', out);
+        fputc('\n', out);
+    }
+    return fclose(out) == 0;
+}
+
 int main(void)
 {
     build_moves();
@@ -510,6 +530,8 @@ int main(void)
         printf("wrote ida/tables.h\n");
     if (emit_asm("ida/tables.s"))
         printf("wrote ida/tables.s\n");
+    if (emit_d11("ida/d11.txt"))
+        printf("wrote ida/d11.txt\n");
     measure_ida();
 
     return 0;
