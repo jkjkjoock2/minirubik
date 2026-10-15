@@ -8,3 +8,6 @@ ida/search
 ida/h3
 ida/ref.elf
 ida/gui.s
+.DS_Store
+.vscode/
+*.dSYM/
